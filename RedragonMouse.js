@@ -15,14 +15,16 @@ export function Type() { return "Hid"; }
 export function DefaultPosition() { return new Array(0, 0); }
 export function DefaultScale() { return 8.0; }
 export function DeviceType() { return "mouse"; }
-export function ImageUrl() { return "https://signalrgb.com"; }
+export function ImageUrl() { return "https://githubusercontent.com"; }
 
 export function ControllableParameters() {
     return new Array(
         { "property": "LightingMode", "label": "Lighting Mode", "type": "combobox", "values": new Array("Canvas", "Static"), "default": "Canvas" },
         { "property": "staticColor", "label": "Static Color", "type": "color", "default": "#00ff00" },
-        { "property": "connectionMode", "label": "Connection Mode", "type": "combobox", "values": new Array("Wireless (0x002F)", "Wired (0x002E)"), "default": "Wireless (0x002F)" },
-        { "property": "frameThrottleMs", "label": "Frame Throttle (ms)", "type": "number", "min": 50, "max": 2000, "default": 150 }
+        { "property": "ledModeByte", "label": "Hardware Mode Byte (2=Solid)", "type": "number", "min": 0, "max": 15, "default": 2 },
+        { "property": "unlockEveryFrame", "label": "Unlock Every Frame (Off = Less Flicker)", "type": "boolean", "default": false },
+        { "property": "colorThreshold", "label": "Color Change Sensitivity", "type": "number", "min": 1, "max": 40, "default": 12 },
+        { "property": "frameThrottleMs", "label": "Frame Throttle (ms)", "type": "number", "min": 50, "max": 2000, "default": 250 }
     );
 }
 
@@ -34,35 +36,33 @@ export function Validate(endpoint) {
 }
 
 function isWireless() {
-    return (typeof connectionMode === "undefined" || connectionMode === "Wireless (0x002F)");
+    return device.productId() === 0x002F;
 }
 
 function sendCol5Cmd(cmdByte) {
     device.set_endpoint(1, 0x0001, 0xff00, 0x0005);
-    let pkt = new Array(65).fill(0);
+    let pkt = new Array(8).fill(0);
     pkt.splice(0, 1, 5);
     pkt.splice(1, 1, cmdByte);
-    device.send_report(pkt, 65);
+    device.send_report(pkt, 8);
 }
 
 function buildRedragon520Packet(r, g, b, wireless) {
     let pkt = new Array(520).fill(0);
     pkt.splice(0, 1, 8);
 
-    // Exact captured Wireless (#5111) & Wired (#74) 520-byte profile block:
-    // - Wireless uses header 33 (0x21) and fixed end byte 255
-    // - Wired uses header 17 (0x11) and dynamic checkByte
     const modeHeader = wireless ? 33 : 17;
-    const endCheck = wireless ? 255 : ((255 ^ ((g * 81) >> 8) ^ ((b * 162) >> 8)) & 0xFF);
+    const hwMode = typeof ledModeByte === "undefined" ? 2 : ledModeByte;
+    const checkByte = (255 ^ ((r * 109) >> 8) ^ ((g * 81) >> 8) ^ ((b * 162) >> 8)) & 0xFF;
 
     const bytes = new Array(
-        modeHeader, 0, 146, 0, 0, 0, 0, 100, 19, 4, 37, 0, 4, 0, 6, 0, 7, 0, 12, 0, 16,
+        modeHeader, 0, 146, 0, 0, 0, 0, 100, 19, 4, 85, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         255, 0, 0, 0, 0, 255, 0, 255, 0, 255, 0, 255, 255, 255, 0, 0, 255, 255, 255, 255, 255, 255,
-        70, 0, 2, 66, 1, 64, r, g, b, 66, 7, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 255, 255, 255, 0, 255, 128,
+        70, 0, hwMode, 66, 1, 64, r, g, b, 66, 7, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 255, 255, 255, 0, 255, 128,
         0, 0, 255, 255, 2, 66, 64, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 255, 255, 255, 0, 255, 255,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 66, 255, 0, 0, 0, 255, 0, 66, 66, 2, 255, 0, 0, 0, 0, 1, 2,
-        endCheck, 0, 0, 165
+        checkByte, 0, 0, 165
     );
 
     for (let i = 0; i < bytes.length; i++) {
@@ -73,23 +73,22 @@ function buildRedragon520Packet(r, g, b, wireless) {
     return pkt;
 }
 
-function sendColorBlock(r, g, b) {
+function sendColorBlock(r, g, b, forceUnlock) {
     const wireless = isWireless();
+    const shouldUnlock = forceUnlock || (typeof unlockEveryFrame !== "undefined" && unlockEveryFrame);
 
-    // Step 1: Send #5107 (0x05 0x21 / 33 for Wireless) or #70 (0x05 0x11 / 17 for Wired) on Col 0x05
-    sendCol5Cmd(wireless ? 33 : 17);
+    if (shouldUnlock) {
+        sendCol5Cmd(wireless ? 33 : 17);
+        device.pause(40);
+    }
 
-    // Exact 58ms delay measured between #5107 (05:39:35.895) and #5111 (05:39:35.954)
-    device.pause(wireless ? 60 : 45);
-
-    // Step 2: Send #5111 (520-byte Report ID 8) on Col 0x03
     device.set_endpoint(1, 0x0001, 0xff00, 0x0003);
     const pkt520 = buildRedragon520Packet(r, g, b, wireless);
     device.send_report(pkt520, 520);
 }
 
 export function Initialize() {
-    sendColorBlock(0, 255, 0);
+    sendColorBlock(0, 255, 0, true);
 }
 
 function parseHexColor(colorVal) {
@@ -107,17 +106,20 @@ let lastB = -1;
 let lastUpdateTime = 0;
 
 function sendColorsToDevice(r, g, b) {
-    const throttle = typeof frameThrottleMs === "undefined" ? 150 : frameThrottleMs;
+    const throttle = typeof frameThrottleMs === "undefined" ? 250 : frameThrottleMs;
+    const thresh = typeof colorThreshold === "undefined" ? 12 : colorThreshold;
     const now = Date.now();
     if (now - lastUpdateTime < throttle) return;
 
-    if (r === lastR && g === lastG && b === lastB) return;
+    const diff = Math.abs(r - lastR) + Math.abs(g - lastG) + Math.abs(b - lastB);
+    if (lastR !== -1 && diff < thresh) return;
+
     lastR = r;
     lastG = g;
     lastB = b;
     lastUpdateTime = now;
 
-    sendColorBlock(r, g, b);
+    sendColorBlock(r, g, b, false);
 }
 
 export function Render() {
@@ -129,5 +131,5 @@ export function Render() {
 }
 
 export function Shutdown() {
-    sendColorsToDevice(0, 0, 0);
+    sendColorBlock(0, 0, 0, true);
 }
