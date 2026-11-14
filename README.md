@@ -2,7 +2,7 @@
 pluging for M910-KS gaming mouse
 Need to add this file in 2 locations 
 1st :Documents\WhirlwindFX\Plugins
-2nd :AppData\Local\VortxEngine\app-2.5.86\Signal-x64\Plugins\Redragon
+
 
 Huge shout out to Its3rr0rsWRLD , Started with basic java scriped and worked it with ai and Device monitoring studio for a long time, 
 
